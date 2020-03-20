@@ -2,8 +2,8 @@ package compiler
 
 import (
 	"fmt"
-
 	"math"
+	"strings"
 
 	"github.com/go-interpreter/wagon/disasm"
 	"github.com/go-interpreter/wagon/wasm"
@@ -126,6 +126,18 @@ func (c *SSAFunctionCompiler) FixupLocationRef(loc *Location, wasUnreachable boo
 	}
 }
 
+func (c *SSAFunctionCompiler) FilterFloatingPoint() {
+	for i, ins := range c.Code {
+		if strings.HasPrefix(ins.Op, "f32.") || strings.HasPrefix(ins.Op, "f64.") ||
+			strings.HasSuffix(ins.Op, "/f32") || strings.HasSuffix(ins.Op, "/f64") {
+			if strings.Contains(ins.Op, ".reinterpret/") || strings.HasSuffix(ins.Op, ".const") {
+				continue // whitelist
+			}
+			c.Code[i] = buildInstr(ins.Target, "fp_disabled_error", nil, nil)
+		}
+	}
+}
+
 // Compile compiles an interpreted WebAssembly modules source code into
 // a Static-Single-Assignment-based intermediate representation.
 func (c *SSAFunctionCompiler) Compile(importTypeIDs []int) {
@@ -202,13 +214,16 @@ func (c *SSAFunctionCompiler) Compile(importTypeIDs []int) {
 
 		case "i32.ge_s":
 			retID := c.NextValueID()
-			if ins.Op.Code == 0x4e { // real ge_s
+
+			switch ins.Op.Code {
+			case 0x4e: // real ge_s
 				c.Code = append(c.Code, buildInstr(retID, "i32.ge_s", nil, c.PopStack(2)))
-			} else if ins.Op.Code == 0x4f { // the wagon ge_s
+			case 0x4f: // the wagon ge_s
 				c.Code = append(c.Code, buildInstr(retID, "i32.ge_u", nil, c.PopStack(2)))
-			} else {
+			default:
 				panic("unreachable")
 			}
+
 			c.PushStack(retID)
 		case "i32.clz", "i32.ctz", "i32.popcnt", "i32.eqz",
 			"i64.clz", "i64.ctz", "i64.popcnt", "i64.eqz",
@@ -254,14 +269,14 @@ func (c *SSAFunctionCompiler) Compile(importTypeIDs []int) {
 			c.Locations = append(c.Locations, &Location{
 				CodePos:     len(c.Code),
 				StackDepth:  len(c.Stack),
-				PreserveTop: ins.Block.Signature != wasm.BlockTypeEmpty,
+				PreserveTop: ins.Block != nil && ins.Block.Signature != wasm.BlockTypeEmpty,
 			})
 
 		case "loop":
 			c.Locations = append(c.Locations, &Location{
 				CodePos:         len(c.Code),
 				StackDepth:      len(c.Stack),
-				LoopPreserveTop: ins.Block.Signature != wasm.BlockTypeEmpty,
+				LoopPreserveTop: ins.Block != nil && ins.Block.Signature != wasm.BlockTypeEmpty,
 				BrHead:          true,
 			})
 
@@ -271,7 +286,7 @@ func (c *SSAFunctionCompiler) Compile(importTypeIDs []int) {
 			c.Locations = append(c.Locations, &Location{
 				CodePos:     len(c.Code),
 				StackDepth:  len(c.Stack),
-				PreserveTop: ins.Block.Signature != wasm.BlockTypeEmpty,
+				PreserveTop: ins.Block != nil && ins.Block.Signature != wasm.BlockTypeEmpty,
 				IfBlock:     true,
 			})
 
@@ -429,12 +444,12 @@ func (c *SSAFunctionCompiler) Compile(importTypeIDs []int) {
 				c.PushStack(targetValueID)
 			}
 
-		case "current_memory":
+		case "memory.size":
 			retID := c.NextValueID()
 			c.Code = append(c.Code, buildInstr(retID, ins.Op.Name, nil, nil))
 			c.PushStack(retID)
 
-		case "grow_memory":
+		case "memory.grow":
 			retID := c.NextValueID()
 			c.Code = append(c.Code, buildInstr(retID, ins.Op.Name, nil, c.PopStack(1)))
 			c.PushStack(retID)

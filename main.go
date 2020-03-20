@@ -4,14 +4,15 @@ import (
 	"flag"
 	"fmt"
 	"github.com/perlin-network/life/exec"
+	"github.com/perlin-network/life/platform"
+	wasm_validation "github.com/perlin-network/life/wasm-validation"
 	"io/ioutil"
+	"strconv"
 	"time"
 )
 
 // Resolver defines imports for WebAssembly modules ran in Life.
-type Resolver struct {
-	tempRet0 int64
-}
+type Resolver struct{}
 
 // ResolveFunc defines a set of import functions that may be called within a WebAssembly module.
 func (r *Resolver) ResolveFunc(module, field string) exec.FunctionImport {
@@ -29,6 +30,11 @@ func (r *Resolver) ResolveFunc(module, field string) exec.FunctionImport {
 				msgLen := int(uint32(vm.GetCurrentFrame().Locals[1]))
 				msg := vm.Memory[ptr : ptr+msgLen]
 				fmt.Printf("[app] %s\n", string(msg))
+				return 0
+			}
+		case "print_i64":
+			return func(vm *exec.VirtualMachine) int64 {
+				fmt.Printf("[app] print_i64: %d\n", vm.GetCurrentFrame().Locals[0])
 				return 0
 			}
 
@@ -57,8 +63,9 @@ func (r *Resolver) ResolveGlobal(module, field string) int64 {
 }
 
 func main() {
-	entryFunctionFlag := flag.String("entry", "app_main", "entry function id")
-	jitFlag := flag.Bool("jit", false, "enable jit")
+	entryFunctionFlag := flag.String("entry", "app_main", "entry function name")
+	pmFlag := flag.Bool("polymerase", false, "enable the Polymerase engine")
+	noFloatingPointFlag := flag.Bool("no-fp", false, "disable floating point")
 	flag.Parse()
 
 	// Read WebAssembly *.wasm file.
@@ -67,15 +74,32 @@ func main() {
 		panic(err)
 	}
 
+	if err := wasm_validation.ValidateWasm(input); err != nil {
+		panic(err)
+	}
+
 	// Instantiate a new WebAssembly VM with a few resolved imports.
 	vm, err := exec.NewVirtualMachine(input, exec.VMConfig{
-		EnableJIT:          *jitFlag,
-		DefaultMemoryPages: 128,
-		DefaultTableSize:   65536,
-	}, new(Resolver))
+		DefaultMemoryPages:   128,
+		DefaultTableSize:     65536,
+		DisableFloatingPoint: *noFloatingPointFlag,
+	}, new(Resolver), nil)
 
 	if err != nil {
 		panic(err)
+	}
+
+	if *pmFlag {
+		compileStartTime := time.Now()
+		fmt.Println("[Polymerase] Compilation started.")
+		aotSvc := platform.FullAOTCompile(vm)
+		if aotSvc != nil {
+			compileEndTime := time.Now()
+			fmt.Printf("[Polymerase] Compilation finished successfully in %+v.\n", compileEndTime.Sub(compileStartTime))
+			vm.SetAOTService(aotSvc)
+		} else {
+			fmt.Println("[Polymerase] The current platform is not yet supported.")
+		}
 	}
 
 	// Get the function ID of the entry function to be executed.
@@ -97,9 +121,18 @@ func main() {
 			panic(err)
 		}
 	}
+	var args []int64
+	for _, arg := range flag.Args()[1:] {
+		fmt.Println(arg)
+		if ia, err := strconv.Atoi(arg); err != nil {
+			panic(err)
+		} else {
+			args = append(args, int64(ia))
+		}
+	}
 
 	// Run the WebAssembly module's entry function.
-	ret, err := vm.Run(entryID)
+	ret, err := vm.Run(entryID, args...)
 	if err != nil {
 		vm.PrintStackTrace()
 		panic(err)

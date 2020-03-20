@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/perlin-network/life/compiler"
 	"github.com/perlin-network/life/exec"
 	"io/ioutil"
 	"os"
@@ -78,7 +79,7 @@ func LoadConfigFromFile(filename string) *Config {
 	return &cfg
 }
 
-func (c *Config) Run(cfgPath string) error {
+func (c *Config) Run(cfgPath string) {
 	var vm *exec.VirtualMachine
 	namedVMs := make(map[string]*exec.VirtualMachine)
 
@@ -92,9 +93,17 @@ func (c *Config) Run(cfgPath string) error {
 				panic(err)
 			}
 			localVM, err := exec.NewVirtualMachine(input, exec.VMConfig{
-				EnableJIT:      true,
-				MaxMemoryPages: 1024, // for memory trap tests
-			}, &Resolver{})
+				//EnableJIT:      true,
+				MaxMemoryPages:       1024, // for memory trap tests
+				GasLimit:             0,    // unlimited
+				DisableFloatingPoint: false,
+			}, &Resolver{}, &compiler.SimpleGasPolicy{
+				GasPerInstruction: 1,
+			})
+			/*aotSvc := platform.FullAOTCompile(localVM)
+			if aotSvc != nil {
+				localVM.SetAOTService(aotSvc)
+			}*/
 			if err != nil {
 				panic(err)
 			}
@@ -124,7 +133,7 @@ func (c *Config) Run(cfgPath string) error {
 					fmt.Sscanf(arg.Value, "%d", &val)
 					args = append(args, int64(val))
 				}
-				fmt.Printf("Entry = %d\n", entryID)
+				fmt.Printf("Entry = %d, len(args) = %d\n", entryID, len(args))
 				ret, err := localVM.Run(entryID, args...)
 				if err != nil {
 					panic(err)
@@ -168,14 +177,9 @@ func (c *Config) Run(cfgPath string) error {
 		}
 		fmt.Printf("PASS L%d\n", cmd.Line)
 	}
-
-	return nil
 }
 
 func main() {
 	cfg := LoadConfigFromFile(os.Args[1])
-	err := cfg.Run(os.Args[1])
-	if err != nil {
-		panic(err)
-	}
+	cfg.Run(os.Args[1])
 }
